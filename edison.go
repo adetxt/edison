@@ -7,6 +7,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"google.golang.org/grpc"
 )
 
@@ -23,13 +24,51 @@ type Edison struct {
 	ec           *echo.Echo
 	grpcEnabled  bool
 	grpcServer   *grpc.Server
-	gwmux        *runtime.ServeMux
+	serveMux     *runtime.ServeMux
 	grpcGateways []GRPCGatewayHandler
+	option       option
 }
 
-func NewEdison() *Edison {
+type EdisonJSONSerializer struct {
+	echo.DefaultJSONSerializer
+}
+
+func (d EdisonJSONSerializer) Serialize(c echo.Context, i interface{}, indent string) error {
+	code := c.Response().Status
+	isOK := code < 400
+
+	res := map[string]interface{}{}
+
+	if !isOK {
+		res["status"] = "error"
+		res["code"] = code
+		res["error"] = strings.ToUpper(http.StatusText(code))
+		res["message"] = i
+	} else {
+		res["status"] = "success"
+		res["message"] = strings.ToUpper(http.StatusText(code))
+		res["data"] = i
+	}
+
+	return d.DefaultJSONSerializer.Serialize(c, res, indent)
+}
+
+func New() *Edison {
+	ec := echo.New()
+	ec.HideBanner = true
+	ec.Debug = true
+	ec.JSONSerializer = EdisonJSONSerializer{}
+
+	ec.Use(
+		middleware.Logger(),
+	)
+
+	ec.GET("/__health", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, "failed")
+	})
+
 	return &Edison{
-		ec: echo.New(),
+		ec: ec,
 	}
 }
 
@@ -43,34 +82,4 @@ func (ed *Edison) RestRouter(method, path string, h RestHandler) {
 
 func (c *RestContext) Bind(i interface{}) error {
 	return c.EchoContext.Bind(i)
-}
-
-func (c *RestContext) JSON(code int, i interface{}, message string) error {
-	isOK := code < 400
-
-	res := map[string]interface{}{}
-
-	if !isOK {
-		res["status"] = "error"
-		res["error"] = strings.ToUpper(http.StatusText(code))
-		res["message"] = message
-	} else {
-		res["status"] = "success"
-		res["message"] = strings.ToUpper(http.StatusText(code))
-		res["data"] = i
-	}
-
-	return c.EchoContext.JSON(code, res)
-}
-
-func (c *RestContext) Success(i interface{}) error {
-	return c.JSON(200, i, "")
-}
-
-func (c *RestContext) Error(e error, code int) error {
-	return c.JSON(code, nil, e.Error())
-}
-
-func (c *RestContext) ErrorWithCustomMessage(code int, message string) error {
-	return c.JSON(code, nil, message)
 }

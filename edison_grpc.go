@@ -10,16 +10,23 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/adetxt/edison/serializer"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/labstack/echo/v4"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func (ed *Edison) EnableGRPC(opts ...grpc.ServerOption) {
-	ed.grpcServer = grpc.NewServer(opts...)
+func (ed *Edison) Prepare(opts ...Option) {
+	option, err := composeOptions(opts...)
+	if err != nil {
+		panic(fmt.Sprintf("error composing options %v", err.Error()))
+	}
+
+	ed.grpcServer = grpc.NewServer()
 	ed.grpcEnabled = true
-	ed.gwmux = runtime.NewServeMux()
+	ed.serveMux = runtime.NewServeMux()
+	ed.option = option
 }
 
 func (ed *Edison) RegisterGRPCGateway(f GRPCGatewayHandler) {
@@ -30,7 +37,10 @@ func (ed *Edison) GRPCServer() *grpc.Server {
 	return ed.grpcServer
 }
 
-func (ed *Edison) StartGRPCServer(grpcPort string, restPort string) {
+func (ed *Edison) Start() {
+	grpcPort := ed.option.grpcPort
+	restPort := ed.option.restPort
+
 	// Create a listener on TCP port
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", grpcPort))
 	if err != nil {
@@ -38,7 +48,7 @@ func (ed *Edison) StartGRPCServer(grpcPort string, restPort string) {
 	}
 
 	// Serve gRPC Server
-	log.Printf("Serving gRPC Server on 0.0.0.0:%s\n", grpcPort)
+	log.Printf("Serving gRPC Server on port %s\n", grpcPort)
 	go func() {
 		log.Fatalln(ed.grpcServer.Serve(lis))
 	}()
@@ -56,32 +66,37 @@ func (ed *Edison) StartGRPCServer(grpcPort string, restPort string) {
 	}
 
 	for _, f := range ed.grpcGateways {
-		f(context.Background(), ed.gwmux, conn)
+		f(context.Background(), ed.serveMux, conn)
 	}
 
-	ed.ec.Use(
-		echo.WrapMiddleware(func(h http.Handler) http.Handler {
-			return ed.gwmux
-		}),
+	echoGrpc := ed.ec.Group("/*")
+	echoGrpc.Use(
+		func(next echo.HandlerFunc) echo.HandlerFunc {
+			return func(c echo.Context) (err error) {
+				writer := &serializer.EdisonResponseWriter{Response: c.Response(), ResponseWriter: c.Response().Writer}
+				c.Response().Writer = writer
+
+				ed.serveMux.ServeHTTP(c.Response(), c.Request())
+				return
+			}
+		},
 	)
 
-	ed.RestRouter("GET", "/__health", func(ctx context.Context, c RestContext) error {
-		return c.EchoContext.String(http.StatusOK, "ok")
-	})
-
-	log.Printf("Serving REST Server on http://0.0.0.0:%s\n", restPort)
+	log.Printf("Serving REST Server on port %s\n", restPort)
 	if err := ed.ec.Start(fmt.Sprintf(":%s", restPort)); err != nil && err != http.ErrServerClosed {
 		ed.ec.Logger.Fatal("shutting down the server")
 	}
 
-	// Wait for interrupt signal to gracefully shutdown the server with a timeout of 10 seconds.
-	// Use a buffered channel to avoid missing signals as recommended for signal.Notify
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt)
-	<-quit
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := ed.ec.Shutdown(ctx); err != nil {
-		ed.ec.Logger.Fatal(err)
+	if ed.option.gracefullShutdown {
+		// Wait for interrupt signal to gracefully shutdown the server with a timeout of 10 seconds.
+		// Use a buffered channel to avoid missing signals as recommended for signal.Notify
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, os.Interrupt)
+		<-quit
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := ed.ec.Shutdown(ctx); err != nil {
+			ed.ec.Logger.Fatal(err)
+		}
 	}
 }
