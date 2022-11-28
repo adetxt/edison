@@ -21,12 +21,13 @@ type (
 )
 
 type Edison struct {
-	ec           *echo.Echo
-	grpcEnabled  bool
-	grpcServer   *grpc.Server
-	serveMux     *runtime.ServeMux
-	grpcGateways []GRPCGatewayHandler
-	option       option
+	ec                *echo.Echo
+	grpcEnabled       bool
+	grpcServer        *grpc.Server
+	serveMux          *runtime.ServeMux
+	grpcGateways      []GRPCGatewayHandler
+	option            option
+	grpcServerOptions []grpc.ServerOption
 }
 
 type EdisonJSONSerializer struct {

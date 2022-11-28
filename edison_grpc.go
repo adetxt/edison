@@ -17,13 +17,19 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+func (ed *Edison) UnaryServerInterceptor(interceptors ...grpc.UnaryServerInterceptor) {
+	for i := 0; i < len(interceptors); i++ {
+		ed.grpcServerOptions = append(ed.grpcServerOptions, grpc.UnaryInterceptor(interceptors[i]))
+	}
+}
+
 func (ed *Edison) Prepare(opts ...Option) {
 	option, err := composeOptions(opts...)
 	if err != nil {
 		panic(fmt.Sprintf("error composing options %v", err.Error()))
 	}
 
-	ed.grpcServer = grpc.NewServer()
+	ed.grpcServer = grpc.NewServer(ed.grpcServerOptions...)
 	ed.grpcEnabled = true
 	ed.serveMux = runtime.NewServeMux()
 	ed.option = option
